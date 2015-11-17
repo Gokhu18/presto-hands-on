@@ -10,8 +10,8 @@ For the Boston Presto hands on meetup, check out this [gist](https://gist.github
 
 # Setting up the environment
 
-1. Upload default.pem (who's contents are included in the gist linked above) key to your cluster, preferrably in `/home/ec2-user/default.pem`.
-2. Log into your cluster as the `ec2-user` user. That is the user we'll be using throughout the tutorial because passwordless `ssh` for root is not setup by default.
+1. Use the `ec2-user` user to log into your cluster because passwordless ssh for `root` has not been setup. Once logged in, to get a `root` shell you can just do `sudo bash`.
+2. Upload default.pem key (who's contents are included in the gist linked above) to your cluster, preferrably in `/home/ec2-user/default.pem`.
 3. We'll use Teradata's `presto-admin` CLI tool for the administrative tasks needed to setup our environment. You should download and set it up with the following instructions on the master node:
 ```
 wget https://s3-us-west-2.amazonaws.com/presto-admin/meetup-2015-11/prestoadmin-1.2-offline.tar.bz2
@@ -24,22 +24,22 @@ sudo ./presto-admin --help
 ```
 wget --header "Cookie: oraclelicense=accept-securebackup-cookie" http://download.oracle.com/otn-pub/java/jdk/8u65-b17/jre-8u65-linux-x64.rpm
 ```
-5. Install the JRE using `presto-admin`:
+5.  Install the JRE using `presto-admin`:
 ```
-# Fill out coordinator and slave internal IPs as posted in the gist and set the user to ec2-user
-vi /etc/opt/prestoadmin/config.json
-sudo mkdir /root/.ssh
 sudo cp /home/ec2-user/default.pem /root/.ssh/id_rsa
 cd /home/ec2-user/prestoadmin/
-sudo ./presto-admin package install /home/ec2-user/jre-8u65-linux-x64.rpm
+# presto-admin will ask you to provide the following: user name for ssh=ec2-user; port=22; *internal* IP of coordinator and workers
+sudo ./presto-admin package install /home/ec2-user/prestoadmin/jre-8u65-linux-x64.rpm
 java -version
 ```
+If you make a mistake typing in the wrong IP addresses of your nodes when prompted by `presto-admin`, you can edit the settings in `/etc/opt/prestoadmin/config.json`.
 
 # Setting up the data
 
-1. Download the data in the `/mnt` directory by running the following commands:
+1. Download the data in the `/mnt` directory by running the commands below. Remember to enter a root shell and then exit after you are done:
 ```
 cd /mnt
+sudo bash
 wget --no-check-certificate https://think.big.academy.aws.s3.amazonaws.com/ontime/orc/b5eb0eae-c2a2-4c3e-850a-f6296905aee7-000000
 wget --no-check-certificate https://think.big.academy.aws.s3.amazonaws.com/ontime/orc/b5eb0eae-c2a2-4c3e-850a-f6296905aee7-000001
 wget --no-check-certificate https://think.big.academy.aws.s3.amazonaws.com/ontime/orc/b5eb0eae-c2a2-4c3e-850a-f6296905aee7-000002
@@ -54,6 +54,7 @@ wget --no-check-certificate https://think.big.academy.aws.s3.amazonaws.com/ontim
 wget --no-check-certificate https://think.big.academy.aws.s3.amazonaws.com/ontime/orc/b5eb0eae-c2a2-4c3e-850a-f6296905aee7-000011
 wget --no-check-certificate https://think.big.academy.aws.s3.amazonaws.com/ontime/orc/b5eb0eae-c2a2-4c3e-850a-f6296905aee7-000012
 wget --no-check-certificate https://think.big.academy.aws.s3.amazonaws.com/ontime/orc/b5eb0eae-c2a2-4c3e-850a-f6296905aee7-000013
+exit
 ```
 2. Upload the newly downloaded data to HDFS:
 ```
@@ -173,7 +174,7 @@ CREATE EXTERNAL TABLE flights (
     Div5TotalGTime INT,
     Div5LongestGTime INT,
     Div5WheelsOff INT,
-    Div5TailNum STRING  
+    Div5TailNum STRING
 )
 STORED AS ORC
 LOCATION '/ontime'
@@ -187,6 +188,7 @@ select count(*) from flights;
 
 1. Download and install the RPM:
 ```
+cd /home/ec2-user/prestoadmin
 wget https://s3-us-west-2.amazonaws.com/presto-admin/meetup-2015-11/presto-server-rpm-0.115t-1.x86_64.rpm
 sudo ./presto-admin package install presto-server-rpm-0.115t-1.x86_64.rpm
 rm -f presto-server-rpm-0.115t-1.x86_64.rpm
@@ -197,16 +199,46 @@ wget https://s3-us-west-2.amazonaws.com/presto-admin/meetup-2015-11/presto-cli-0
 sudo mv presto-cli-0.115t-executable.jar /usr/lib/presto/bin/presto
 chmod +x /usr/lib/presto/bin/presto
 ```
-3. Configure Hive connector:
+3. Configure Presto coordinator and workers:
+```
+sudo mkdir /etc/opt/prestoadmin/coordinator
+sudo mkdir /etc/opt/prestoadmin/workers
+
+sudo bash -c 'echo "
+coordinator=true
+node-scheduler.include-coordinator=false
+discovery-server.enabled=true
+discovery.uri=http://10.0.0.83:8081
+http-server.http.port=8081
+query.max-memory-per-node=1GB
+query.max-memory=40GB
+" > /etc/opt/prestoadmin/coordinator/config.properties'
+
+sudo bash -c 'echo "
+coordinator=false
+discovery.uri=http://10.0.0.83:8081
+http-server.http.port=8081
+query.max-memory-per-node=1GB
+query.max-memory=40GB
+" > /etc/opt/prestoadmin/workers/config.properties'
+
+sudo ./presto-admin configuration deploy
+```
+4. Configure Hive connector:
 ```
 sudo mkdir /etc/opt/prestoadmin/connectors
-sudo touch /etc/opt/prestoadmin/connectors/hive.properties
+
 sudo bash -c 'echo "
 connector.name=hive-cdh5
-hive.metastore.uri=thrift://<IP OF MASTER HOST>:9083
+hive.metastore.uri=thrift://10.0.0.83:9083
 hive.allow-drop-table=true
 hive.allow-rename-table=true
 " > /etc/opt/prestoadmin/connectors/hive.properties'
+
 sudo ./presto-admin connector add hive
+```
+5. Start Presto coordinator and workers and use the CLI:
+```
 sudo ./presto-admin server start
+/usr/lib/presto/bin/presto --server localhost:8081 --catalog hive
 ```
